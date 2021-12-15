@@ -1,0 +1,310 @@
+# Importing libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from collections import Counter
+from sklearn.neural_network import MLPClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.model_selection import cross_val_score
+import joblib
+
+
+# Reading csv files into dataframes
+train_df = pd.read_csv("/Users/ET/PycharmProjects/pythonProject1/Batch1_training.csv", low_memory=False)
+test_df = pd.read_csv("/Users/ET/PycharmProjects/pythonProject1/Batch2_testing.csv", low_memory=False)
+
+
+# Checking what is inside the files
+print(train_df.head(5))
+print(train_df.dtypes)
+for col in train_df.columns:
+    print(col)
+
+
+# Descriptive statistics for the features of the data
+train_df['Func'].value_counts() # there are 83827 "POS" and 14872 "NEG"
+df = train_df.filter(regex='SHAPE')
+df_log2 = np.log2(df)
+boxplot = df_log2.boxplot()
+df_mean = pd.DataFrame(df.mean())
+df_mean_sorted = df_mean.sort_values(0, ascending=False)
+
+
+# Finding features that are different for toxin-treated vs. untreated cells
+train_mean = pd.DataFrame(train_df.groupby(['Func']).mean())
+train_mean.loc['fold'] = train_mean.iloc[1] / train_mean.iloc[0]
+train_mean = train_mean.filter(regex='SHAPE')
+train_mean_transformed = train_mean.T
+train_mean_sorted = train_mean_transformed.sort_values('fold', ascending=False)
+# Fold changes calculation showed that SHAPE_Cyto_mask_Area and SHAPE_Cell_mask_Area are the two features
+# that have the biggest difference between "POS" and "NEG" conditions
+
+
+# Run PCA on the selected data to visualize samples in two dimensions and find the driving components
+X = df
+X = df.filter(regex='Area')
+X = StandardScaler().fit_transform(X)
+
+df_log2['toxin'] = np.where(train_df.Func.str.contains('POS'), 0, 1)
+y = df_log2['toxin']
+
+pca = PCA(n_components=2)
+X_pca = pca.fit_transform(X)
+pca_df = pd.DataFrame(X_pca,columns=['PCA1','PCA2'])
+
+
+# Create PCA plot
+def pcaplot(score,coeff,labels=None):
+    xs = score[:,0]
+    ys = score[:,1]
+    n = coeff.shape[0]
+    scalex = 1.0/(xs.max() - xs.min())
+    scaley = 1.0/(ys.max() - ys.min())
+    plt.scatter(xs * scalex,ys * scaley, c = y)
+    for i in range(n):
+        plt.arrow(0, 0, coeff[i,0], coeff[i,1],color = 'r',alpha = 0.5)
+        if labels is None:
+            plt.text(coeff[i,0]* 1.15, coeff[i,1] * 1.15, "Var"+str(i+1), color = 'g', ha = 'center', va = 'center')
+        else:
+            plt.text(coeff[i,0]* 1.15, coeff[i,1] * 1.15, labels[i], color = 'g', ha = 'center', va = 'center')
+plt.xlim(-1,1)
+plt.ylim(-1,1)
+plt.xlabel("PC{}".format(1))
+plt.ylabel("PC{}".format(2))
+plt.grid()
+
+pcaplot(X_pca[:,0:2],np.transpose(pca.components_[0:2, :]))
+plt.show()
+
+
+# Find the most important feature for each PC
+pca.explained_variance_ratio_ # the first PC explained 73% of the variance
+print(abs( pca.components_ ))
+n_pcs= pca.components_.shape[0]
+most_important = [np.abs(pca.components_[i]).argmax() for i in range(n_pcs)]
+features_df = df.filter(regex='Area')
+features_names = features_df.columns.values
+most_important_names = [features_names[most_important[i]] for i in range(n_pcs)]
+dic = {'PC{}'.format(i): most_important_names[i] for i in range(n_pcs)}
+dic_df = pd.DataFrame(dic.items())
+# PC1: SHAPE_Cell_mask_Area_sq_um, PC2: SHAPE_Cyto_mask_Area
+
+
+# k-means clustering
+clustering_df = df.filter(regex='Area')
+
+# Using the Elbow Method to find the optimal number of cluster
+distortions = []
+K = range(1,10)
+for k in K:
+    kmeanModel = KMeans(n_clusters=k)
+    kmeanModel.fit(clustering_df)
+    distortions.append(kmeanModel.inertia_)
+plt.figure(figsize=(16,8))
+plt.plot(K, distortions, 'bx-')
+plt.xlabel('k')
+plt.ylabel('Distortion')
+plt.title('The optimal k as shown by the Elbow Method')
+plt.show()
+# Based on this method, the optimal number of cluster is 3.
+# However, we expected only two clusters for "POS" and "NEG" treatment.
+
+# Perform k-means clustering
+kmeans = KMeans(n_clusters=2, init='k-means++', random_state=0).fit(clustering_df)
+kmeans_labels = kmeans.labels_
+Counter(kmeans_labels) # 53939 in cluster 1, 44760 in cluster 2.
+kmeans_cc = kmeans.cluster_centers_
+kmeans.inertia_ # other info
+kmeans.n_iter_ # other info
+
+# Compare k-means clustering results with the pseudo-labels
+clustering_result_df = clustering_df
+clustering_result_df['k-means'] = kmeans_labels
+clustering_result_df['toxin'] = df_log2['toxin']
+plt.subplot(1, 2, 1)
+sns.scatterplot(data=clustering_result_df, x="SHAPE_Cell_mask_Area_sq_um", y="SHAPE_Cyto_mask_Area", hue=kmeans_labels)
+plt.subplot(1, 2, 2)
+sns.scatterplot(data=clustering_result_df, x="SHAPE_Cell_mask_Area_sq_um", y="SHAPE_Cyto_mask_Area", hue=clustering_result_df['toxin'])
+plt.show()
+# These plots showed that k-means clustering performed poorly in predicting the clusters of "POS" and "NEG" cells
+
+# Checking for batch effect
+df = test_df.filter(regex='SHAPE')
+clustering_df = df.filter(regex='Area')
+kmeans = KMeans(n_clusters=2, init='k-means++', random_state=0).fit(clustering_df)
+kmeans_labels = kmeans.labels_
+Counter(kmeans_labels) # 55776 in cluster 1, 45004 in cluster 2.
+test_df['Func'].value_counts() # 83897 "POS" and 16883 "NEG".
+
+
+# Multilayer perceptron (MLP) training
+mlp_df = df.filter(regex='Area')
+mlp_toxin = pd.DataFrame({'Toxin' : df_log2['toxin']})
+
+count = 0
+
+for a1 in range(30):
+    for a2 in range(30):
+        count = count + 1
+        print(str(count))
+        b1 = a1 + 1
+        b2 = a2 + 1
+        name = 'mlp_cv10_' + str(b1) + '_' + str(b2) + '.pkl'
+
+        # MLP model
+        clf = MLPClassifier(solver='adam', alpha=1e-3, hidden_layer_sizes=(b1, b2), random_state=1, max_iter=1000)
+
+        scores = cross_val_score(clf, mlp_df, mlp_toxin.values.ravel(), cv=10)
+        mean = np.mean(scores)
+        if (mean > 0.8):
+            print(str(b1))
+            print(str(b2))
+
+            print(scores)
+            print(str(mean))
+            print(str(np.std(scores)))
+
+            clf.fit(mlp_df,mlp_toxin)
+
+            joblib.dump(clf, name)
+
+# MLP prediction, selected hidden layer sizes: 10,9 and 17,21.
+df = train_df.filter(regex='SHAPE')
+df_log2 = np.log2(df)
+df_log2['toxin'] = np.where(train_df.Func.str.contains('POS'), 0, 1)
+mlp_df = df.filter(regex='Area')
+mlp_toxin = pd.DataFrame({'Toxin' : df_log2['toxin']})
+
+df = test_df.filter(regex='SHAPE')
+df_log2 = np.log2(df)
+df_log2['toxin'] = np.where(test_df.Func.str.contains('POS'), 0, 1)
+mlptest_df = df.filter(regex='Area')
+mlptest_toxin = pd.DataFrame({'Toxin' : df_log2['toxin']})
+
+clf_MLP = MLPClassifier(solver='adam', alpha=1e-3, hidden_layer_sizes=(17, 21), random_state=1, max_iter=1000)
+clf_MLP.fit(mlp_df, mlp_toxin)
+clf_MLP_score = cross_val_score(clf_MLP, mlp_df, mlp_toxin.values.ravel(), cv=10)
+clf_MLP_mean = np.mean(clf_MLP_score)
+print(str(clf_MLP_mean))
+print(str(np.std(clf_MLP_score)))
+
+clf_MLP_result = clf_MLP.predict(mlptest_df)
+
+clf_MLP_df = mlptest_df
+clf_MLP_df['clf'] = pd.DataFrame(clf_MLP_result)
+clf_MLP_df['toxin'] = mlptest_toxin
+plt.subplot(1, 2, 1)
+sns.scatterplot(data=clf_MLP_df, x="SHAPE_Cell_mask_Area_sq_um", y="SHAPE_Cyto_mask_Area", hue=clf_MLP_df['clf'])
+plt.subplot(1, 2, 2)
+sns.scatterplot(data=clf_MLP_df, x="SHAPE_Cell_mask_Area_sq_um", y="SHAPE_Cyto_mask_Area", hue=clf_MLP_df['toxin'])
+plt.show()
+
+clf_MLP_df['clf'] == clf_MLP_df['toxin']
+count = np.count_nonzero(clf_MLP_df['clf'] == clf_MLP_df['toxin'])
+print(count)
+95601/100780 # 17-21 # 94.86%
+95449/100780 # 10-9 # 94.71%
+
+
+# Random forest training
+rf_df = df.filter(regex='Area')
+rf_toxin = pd.DataFrame({'Toxin' : df_log2['toxin']})
+
+for i in range(100):
+    b1 = i + 1
+    print(str(b1))
+    name = 'randomforest_cv10_' + str(b1) + '.pkl'
+
+    # Build the model
+    clf = RandomForestClassifier(n_estimators=b1)
+
+    scores = cross_val_score(clf, rf_df, rf_toxin.values.ravel(), cv=10)
+    mean = np.mean(scores)
+
+    if (mean > 0.8):
+        print(scores)
+        print(str(mean))
+        print(str(np.std(scores)))
+
+        clf.fit(rf_df, rf_toxin)
+        joblib.dump(clf, name)
+
+# Random forest on 'batch2_testing' dataset, selected n_estimators = 67.
+df = test_df.filter(regex='SHAPE')
+df_log2 = np.log2(df)
+df_log2['toxin'] = np.where(test_df.Func.str.contains('POS'), 0, 1)
+rftest_df = df.filter(regex='Area')
+rftest_toxin = pd.DataFrame({'Toxin' : df_log2['toxin']})
+
+clf = RandomForestClassifier(n_estimators=67)
+clf.fit(rf_df, rf_toxin)
+clf_score = cross_val_score(clf, rf_df, rf_toxin.values.ravel(), cv=10)
+clf_mean = np.mean(clf_score)
+print(str(clf_mean))
+print(str(np.std(clf_score)))
+
+clf_result = clf.predict(rftest_df)
+
+clf_df = rftest_df
+clf_df['clf'] = pd.DataFrame(clf_result)
+clf_df['toxin'] = rftest_toxin
+plt.subplot(1, 2, 1)
+sns.scatterplot(data=clf_df, x="SHAPE_Cell_mask_Area_sq_um", y="SHAPE_Cyto_mask_Area", hue=clf_df['clf'])
+plt.subplot(1, 2, 2)
+sns.scatterplot(data=clf_df, x="SHAPE_Cell_mask_Area_sq_um", y="SHAPE_Cyto_mask_Area", hue=clf_df['toxin'])
+plt.show()
+
+clf_df['clf'] == clf_df['toxin']
+count = np.count_nonzero(clf_df['clf'] == clf_df['toxin'])
+print(count)
+95130/100780
+# 94.39%
+
+# To find which feature is driving the classification
+importance = clf.feature_importances_
+# array([0.03101933, 0.04337025, 0.23404235, 0.05227728, 0.11653031,
+#        0.07801191, 0.03106216, 0.26338665, 0.15029976])
+
+
+# Gradient boosting classification
+df = train_df.filter(regex='SHAPE')
+df_log2 = np.log2(df)
+df_log2['toxin'] = np.where(train_df.Func.str.contains('POS'), 0, 1)
+gb_df = df.filter(regex='Area')
+gb_toxin = pd.DataFrame({'Toxin' : df_log2['toxin']})
+
+df = test_df.filter(regex='SHAPE')
+df_log2 = np.log2(df)
+df_log2['toxin'] = np.where(test_df.Func.str.contains('POS'), 0, 1)
+gbtest_df = df.filter(regex='Area')
+gbtest_toxin = pd.DataFrame({'Toxin' : df_log2['toxin']})
+
+clf_gb = GradientBoostingClassifier(learning_rate=0.005, n_estimators=1500, max_depth=9, min_samples_split=1200, min_samples_leaf=60, subsample=0.85, random_state=10, max_features=7,
+warm_start=True)
+clf_gb.fit(gb_df, gb_toxin)
+clf_gb_score = cross_val_score(clf_gb, gb_df, gb_toxin.values.ravel(), cv=10)
+clf_gb_mean = np.mean(clf_gb_score)
+print(str(clf_gb_mean))
+print(str(np.std(clf_gb_score)))
+
+clf_gb_result = clf_gb.predict(gbtest_df)
+
+clf_gb_df = gbtest_df
+clf_gb_df['clf'] = pd.DataFrame(clf_gb_result)
+clf_gb_df['toxin'] = gbtest_toxin
+plt.subplot(1, 2, 1)
+sns.scatterplot(data=clf_gb_df, x="SHAPE_Cell_mask_Area_sq_um", y="SHAPE_Cyto_mask_Area", hue=clf_gb_df['clf'])
+plt.subplot(1, 2, 2)
+sns.scatterplot(data=clf_gb_df, x="SHAPE_Cell_mask_Area_sq_um", y="SHAPE_Cyto_mask_Area", hue=clf_gb_df['toxin'])
+plt.show()
+
+clf_gb_df['clf'] == clf_gb_df['toxin']
+count = np.count_nonzero(clf_gb_df['clf'] == clf_gb_df['toxin'])
+print(count)
+95348/100780
+# 94.61%
