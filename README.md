@@ -1,2 +1,4 @@
 # AICodingChallenge
-This is the code I used to differentiate healthy vs. toxin-treated cells.
+This is a Python-based machine learning code to differentiate healthy vs. toxin-treated cells.
+
+
