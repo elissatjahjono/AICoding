@@ -1,6 +1,4 @@
 # AICodingChallenge
-This is a Python-based machine learning code to differentiate healthy vs. toxin-treated cells.
-
 High-throughput screenings generate vast amounts of data, often unmanageable by standard method. Machine learning is a rapid and accurate approach to overcome this barrier and advance research.
 Goal: classify single cells into “healthy” and “toxin-treated” categories.
 
